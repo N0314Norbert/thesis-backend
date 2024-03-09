@@ -1,12 +1,10 @@
 require("dotenv").config();
 const express = require("express");
 const app = express();
-const jwt = require("jsonwebtoken");
 const cors = require("cors");
 const bodyParser = require("body-parser");
-const axios = require("axios");
-const querystring = require("querystring");
-const msal = require("@azure/msal-node");
+const { getTables, getBlobs } = require("./containerHandler");
+const { odata } = require("@azure/data-tables");
 
 app.use(express.json());
 app.use(cors());
@@ -14,109 +12,21 @@ app.use(bodyParser.json());
 
 const port = process.env.PORT || 3000;
 
-app.post("/register-user", async (req, res) => {
-  const { username, password, displayName, email } = req.body;
-  const tokenEndpoint = `https://login.microsoftonline.com/${process.env.TENANT_ID}/oauth2/v2.0/token`;
-  const graphApiEndpoint = "https://graph.microsoft.com/v1.0/users";
-  const body_json = {
-    grant_type: "client_credentials",
-    client_id: process.env.APP_ID,
-    client_secret: process.env.CLIENT_SECRET,
-    scope: "https://graph.microsoft.com/.default",
-  };
+app.get("/fetchglb", async (req, res) => {
+  const blobId = req.query.blobId;
   try {
-    const tokenResponse = await axios.post(
-      tokenEndpoint,
-      querystring.stringify(body_json)
-    );
+    const blob = await getBlobs(process.env.GLB_CONTAINER_NAME, blobId);
 
-    const accessToken = tokenResponse.data.access_token;
-    const userCreationResponse = await axios.post(
-      graphApiEndpoint,
-      {
-        accountEnabled: true,
-        userPrincipalName: username + "@nagynorbert314gmail.onmicrosoft.com",
-        passwordProfile: {
-          forceChangePasswordNextSignIn: false,
-          password: password,
-        },
-        userType: "Guest",
-        displayName: email,
-        mailnickname: username,
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
-      }
-    );
-    const addMemberEndpoint = `https://graph.microsoft.com/v1.0/groups/${process.env.GROUP_ID}/members/$ref`;
-    await axios.post(
-      addMemberEndpoint,
-      {
-        "@odata.id": `https://graph.microsoft.com/v1.0/users/${userCreationResponse.data.id}`,
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
-      }
-    );
-    res.status(200).json({ success: true, data: userCreationResponse.data });
-  } catch (error) {
-    res.status(500).send(error.message);
+    res.setHeader("Content-Disposition", `attachment; filename=${blobId}`);
+    res.setHeader("Content-Type", blob.contentType);
+    blob.readableStreamBody.pipe(res);
+  } catch (err) {
+    console.error(err);
+    res.status(500).send("Internal Server Error");
   }
 });
 
-const config = {
-  auth: {
-    clientId: process.env.APP_ID,
-    authority: `https://login.microsoftonline.com/${process.env.TENANT_ID}`,
-    clientSecret: process.env.CLIENT_SECRET,
-  },
-};
-
-const cca = new msal.ConfidentialClientApplication(config);
-
-app.post("/login", async (req, res) => {
-  const username = req.body.email;
-  const password = req.body.password;
-
-  const tokenRequest = {
-    scopes: ["openid", "profile", "user.read"],
-    username: username,
-    password: password,
-  };
-
-  try {
-    const result = await cca.acquireTokenByUsernamePassword(tokenRequest);
-
-    if (result.status) {
-      const accessToken = generateAccessToken(username);
-      const refreshToken = jwt.sign(username, process.env.REFRESH_TOKEN_SECRET);
-      //refreshTokens.push(refreshToken);
-      res
-        .status(200)
-        .json({ accessToken: accessToken, refreshToken: refreshToken, result });
-    } else {
-      res.status(401).send("Unauthenticated");
-    }
-  } catch (error) {
-    res.status(500).send(error.message);
-  }
-});
-
-function generateAccessToken(user) {
-  return jwt.sign({ name: user }, process.env.ACCESS_TOKEN_SECRET, {
-    expiresIn: "15m",
-  });
-}
-app.delete("/logout", (req, res) => {
-  res.sendStatus(204);
-});
-function authenticateToken(req, res, next) {
+/*function authenticateToken(req, res, next) {
   const authHeader = req.headers["authorization"];
   const token = authHeader && authHeader.split(" ")[1];
   if (token == null) return res.sendStatus(401);
@@ -126,17 +36,57 @@ function authenticateToken(req, res, next) {
     req.user = user;
     next();
   });
-}
+}*/
 
-app.post("/token", (req, res) => {
-  const refreshToken = req.body.token;
-  if (refreshToken == null) return res.sendStatus(401);
-  //if (!refreshTokens.includes(refreshToken)) return res.sendStatus(403);
-  jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET, (err, user) => {
-    if (err) return res.sendStatus(403);
-    const accessToken = generateAccessToken({ name: user.name });
-    res.json({ accessToken: accessToken });
-  });
+app.get("/productdata", async (req, res) => {
+  const id = req.query.id;
+  const queryOptions = id ? { filter: odata`RowKey eq '${id}'` } : undefined;
+  try {
+    const products = await getTables(queryOptions);
+    res.status(200).json(products);
+  } catch (error) {
+    console.error(error.message);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+app.get("/productcount", async (req, res) => {
+  try {
+    const products = await getTables();
+    res.status(200).json({ count: products.length });
+  } catch (error) {
+    console.error(error.message);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+app.get("/productvector", async (req, res) => {
+  const { min, max } = req.query;
+  const queryOptions = { filter: odata`RowKey ge ${min} and RowKey le ${max}` };
+  try {
+    const products = await getTables(queryOptions);
+    res.status(200).json(products);
+  } catch (error) {
+    console.error(error.message);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+app.get("/productimage", async (req, res) => {
+  const id = req.query.id;
+  if (!id) {
+    res.status(400).send("missing parameter");
+  }
+  try {
+    const blob = await getBlobs(process.env.IMAGE_CONTAINER_NAME, id);
+
+    res.setHeader("Content-Disposition", `attachment; filename=${id}`);
+    res.setHeader("Content-Type", blob.contentType);
+    blob.readableStreamBody.pipe(res);
+  } catch (error) {
+    console.error(error.message);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 app.listen(port);
