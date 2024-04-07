@@ -17,16 +17,16 @@ const getBlobs = async (containerName, id) => {
   const downloadBlockBlobResponse = await blobClient.download();
   return downloadBlockBlobResponse;
 };
-const getTables = async (queryOptions) => {
-  const tableName = process.env.TABLE_NAME;
-  const tableClient = new TableClient(
-    `https://${process.env.STORAGE_ACCOUNT}.table.core.windows.net`,
-    tableName,
-    new AzureNamedKeyCredential(
-      process.env.STORAGE_ACCOUNT,
-      process.env.STORAGE_KEY
-    )
-  );
+
+const uploadToTable = async (entityArray, tableName) => {
+  const tableClient = createTableClient(tableName);
+  for (const entity of entityArray) {
+    await tableClient.upsertEntity(entity);
+  }
+};
+
+const getTables = async (tableName, queryOptions) => {
+  const tableClient = createTableClient(tableName);
   const options = queryOptions
     ? {
         queryOptions: queryOptions,
@@ -39,4 +39,16 @@ const getTables = async (queryOptions) => {
   return Promise.all(entities);
 };
 
-module.exports = { getTables, getBlobs };
+const createTableClient = (tableName) => {
+  const tableClient = new TableClient(
+    `https://${process.env.STORAGE_ACCOUNT}.table.core.windows.net`,
+    tableName,
+    new AzureNamedKeyCredential(
+      process.env.STORAGE_ACCOUNT,
+      process.env.STORAGE_KEY
+    )
+  );
+  return tableClient;
+};
+
+module.exports = { getTables, getBlobs, uploadToTable };
